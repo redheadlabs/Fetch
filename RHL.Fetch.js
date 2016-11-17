@@ -10,6 +10,7 @@
 	var settings,
 		defaults = {
 			autoRun: false,
+			replaceContents: false,
 			url: config.ShopPath,
 			nResults: 1,
 			context: '[data-rhl-fetch="place"]', //Where the result goes
