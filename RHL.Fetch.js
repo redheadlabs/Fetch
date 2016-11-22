@@ -7,12 +7,16 @@
 
 	"use strict";
 
-	var settings,
+	var data = {
+			requests: {}
+		},
 		defaults = {
+			debug: false,
+			cache: true,
 			autoRun: false,
 			replaceContents: false,
+			nMaxResults: 1,
 			url: config.ShopPath,
-			nResults: 1,
 			context: '[data-rhl-fetch="place"]', //Where the result goes
 			contextRemote: '[data-rhl-fetch="fetch"]', //Where the result comes from
 			template: '[type="text/template"]'
@@ -20,26 +24,18 @@
 
 	var Fetch = function( options ){
 
-		var instance = this
-
-		this.init( options )
-		this.applyTemplate = function( item ){
-
-			return item || null
-		}
-		this.onSuccess = function(){
-
-			return instance
-		}
-		this.onFail = function(){
-
-			return instance
-		}
+		var settings = $.extend({}, defaults, options),
+			instance = NewInstance( this );
+			instance.settings = settings
+			instance.init()
 	}
-
-	Fetch.prototype.init = function( options ){
-
-		this.settings = settings = $.extend({}, defaults, options)
+	//User can redefine these
+	Fetch.prototype.applyTemplate = function(){ return item || null }
+	Fetch.prototype.onSuccess = function(){ return this }
+	Fetch.prototype.onFail = function(){ return this }
+	Fetch.prototype.afterLoad = function(){ return this }
+	Fetch.prototype.afterLazyLoad = function(){ return this }
+	Fetch.prototype.init = function(){
 
 		if( this.settings.autoRun === true )
 			return this.run()
@@ -50,89 +46,217 @@
 
 		var instance = this,
 			url = url || this.settings.url,
-			content = context || this.settings.context
-
-		var req = this.fetch( url ).then( function( results ){
-
-			instance.format( results )
-
-			//console.log( results, req )
-		})
+			content = context || this.settings.context,
+			req = instance.fetch( url ).then( function( results ){
+					instance.format( results ).then( function( resultItems ){
+						instance.lazyLoad( instance.settings.context, function(){
+							instance.exportData()
+							instance.afterLazyLoad()
+						})
+						instance.afterLoad( resultItems )
+					}).catch( function( err ){
+						instance.log( err, 'error' )
+					})
+				  })
 	}
 	Fetch.prototype.fetch = function( url ){
 
 		var instance = this,
 			url = url || instance.settings.url,
+			keyCache = window.btoa( url ),
 			promise = new Promise( function( resolve, reject ){
 
-				$.ajax({
-					url: url,
-					error: function( xhr, textStatus, errorThrown ){
+				instance.urlExists( url, function( bExists ){
 
-						instance.onFail()
-						reject( Error('Page Not Found: ' + errorThrown) )
-					}
-				}).done( function( results ){
+					if( bExists === false ){
 
-					var $results = $( results ).find( instance.settings.contextRemote )
-
-					if( $results.length !== 0 ){
-
-						instance.onSuccess()
-						resolve( $results )
+						instance.log({
+							HTML: '404',
+							ErrorThrown: url + ' - Page Does Not Exist'
+						}, 'cache')
+						reject('RHLFetch Error: Page `' + url + '` Does Not Exist. Skipping')
 					}else{
 
-						instance.onFail()
-						reject( Error('No Results') )
+						$.ajax({
+							url: url,
+							async: true,
+							cache: true,
+							error: function( xhr, textStatus, errorThrown ){
+
+								instance.log({
+									Status: xhr.status,
+									ErrorThrown: errorThrown
+								}, 'cache', keyCache)
+
+								instance.onFail()
+								reject('Page Not Found: ' + errorThrown)
+							}
+						}).done( function( results, textStatus, jqXHR ){
+
+							var $results = $( results ).find( instance.settings.contextRemote )
+
+							if( $results.length !== 0 ){
+
+								instance.log({
+									Status: jqXHR.status,
+								}, 'cache', keyCache)
+
+								instance.onSuccess()
+								resolve( $results )
+							}else{
+
+								instance.log({
+									Status: jqXHR.status,
+									ErrorThrown: url + ' - No Results'
+								}, 'cache', keyCache)
+
+								instance.onFail()
+								reject('No Results')
+							}
+						})
 					}
 				})
 			})
 
 		return promise
+	},
+	Fetch.prototype.importData = function(){
+
+		this.log( data, 'dir')
+
+		var objCookieBadRequests = {}
+
+		$.each( objCookieBadRequests, function( key, val ){
+
+			this.data[ key ] = val
+		})
+		return data
+	}
+	Fetch.prototype.exportData = function(){
+
+		this.log( data, 'dir')
+		var objCookieBadRequests = {},
+			objCookieRequestsData = {}
+
+		$.each( data.requests, function( key, val ){
+			switch( val.Status ){
+				case 404:
+				case 403:
+					objCookieBadRequests[ key ] = val
+					break;
+				case 200:
+				default:
+					objCookieRequestsData[ key ] = val
+					break;
+			}
+		})
+		//$.Cookie('RHLFetchBadRequests', objCookieBadRequests)
+		//$.Cookie('RHLFetchRequestsData', objCookieRequestsData)
+
+		return data
 	}
 	Fetch.prototype.format = function( $results ){
 
+		if( $results.length === 0 ) return false
+
 		var instance = this,
-			$resultItems = $results.slice(0, instance.settings.nResults),
-			$context = $( instance.settings.context ),
-			hasTemplate = $( instance.settings.template ).length !== 0
+			hasTemplate = $( instance.settings.template ).length !== 0,
+			promise = new Promise( function( resolve, reject ){
 
-		if( $resultItems.length === 0 ) return
+				var $resultItems = instance.settings.nMaxResults !== 0 ? $results.slice(0, instance.settings.nMaxResults) : $results,
+					nResults = $resultItems.length || 0
 
-		$resultItems.each( function( idx, item ){
+				if( nResults === 0 )
+					resolve( $resultItems )
 
-			var $newContent = $( item )
+				$resultItems.each( function( idx, content ){
 
-			if( hasTemplate ){
+					var nth = idx + 1,
+						elem = hasTemplate ? instance.settings.template : content,
+						$template = $('<div />').html( $( elem ).html() )
 
-				$newContent = $('<div />').html( $( instance.settings.template ).html() ).html()
-			}
+					instance.UpdateView( $template.html(), content )
 
-			$context.css({opacity: '0', visibility: 'hidden'})
+					if( nth === nResults )
+						resolve( $resultItems )
+				})
+			})
 
-			instance.UpdateView( $newContent )
-
-			if( hasTemplate ){
-
-				var templateData = instance.applyTemplate( item ),
-					temply = new Temply(templateData, $context[0] )
-
-				temply.run()
-			}
-
-			$context.css({opacity: '1', visibility: 'visible'})
-		})
+		return promise
 	}
-	Fetch.prototype.UpdateView = function( $content ){
+	Fetch.prototype.UpdateView = function( $template, content ){
 
-		var $context = $( this.settings.context )
+		var templateData = this.applyTemplate( content ),
+			$context = $( this.settings.context )
+
+		$context.css({opacity: '0', visibility: 'hidden'})
+
+		this.log( $context )
+		this.log( $template )
 
 		if( this.settings.replaceContents === true ){
 
-			$context.html( $content )
+			$context.html( $template )
 		}else{
 
-			$context.append( $content )
+			$context.append( $template )
+		}
+
+		if( templateData ){
+
+			var temply = new Temply(templateData, $context.get(0) )
+
+			temply.run()
+		}
+
+		$context.css({opacity: '1', visibility: 'visible'})
+	}
+	Fetch.prototype.lazyLoad = function( elems, callback ){
+
+		var $elems = $( elems ),
+			nElems = $elems.length || 0
+
+		$elems.find('[data-lazy]').each( function( idx, elem ){
+
+			var nth = idx + 1,
+				img = new Image(),
+				src = $( elem ).attr('data-lazy')
+
+			img.onload = function( event ){
+
+				$( elem ).attr('src', src)
+
+				if( nth === nElems ){
+
+					if( typeof callback === 'function' ){
+
+						callback()
+					}
+				}
+			}
+			img.src = src
+		})
+	}
+	Fetch.prototype.urlExists = function( url, callback ){
+		var xhr = new XMLHttpRequest()
+		xhr.onreadystatechange = function(){
+			if( xhr.readyState === 4 ){
+				callback( xhr.status < 400 );
+			}
+		}
+		xhr.open('HEAD', url)
+		xhr.send()
+	}
+	Fetch.prototype.log = function( elem, mode, key ){
+		switch( mode ){
+			case 'cache':
+				data.requests[ key ] = elem
+				break;
+			default:
+				if( this.settings.debug !== false ){
+					return cl( elem, mode )
+				}
+				break;
 		}
 	}
 
@@ -143,3 +267,44 @@
 	this.document,
 	jQuery
 )
+
+var cl = function( elem, mode ){
+	if( typeof console !== 'undefined' ){
+		switch( mode ){
+			case 'info':
+				console.info( elem )
+				break;
+			case 'dir':
+				console.log( elem )
+				break;
+			case 'error':
+				console.info( elem )
+				break;
+			default:
+				console.log( elem )
+				break;
+		}
+	}
+}
+/* --- Basically an Object.assign Polyfill --- */
+var NewInstance = function( target ){
+
+	var from,
+		to = target,
+		index = 0,
+		total = arguments.length,
+		hasOwnProperty = Object.prototype.hasOwnProperty
+
+	while( ++index < total ){
+		from = arguments[ index ]
+		if( from != null ){
+			for( var key in from ){
+				if( hasOwnProperty.call(from, key) ){
+					to[ key ] = from[ key ];
+				}
+			}
+		}
+	}
+
+	return to;
+}
