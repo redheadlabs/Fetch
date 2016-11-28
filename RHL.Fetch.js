@@ -46,18 +46,34 @@
 
 		var instance = this,
 			url = url || this.settings.url,
+			keyCache = window.btoa( url ),
 			content = context || this.settings.context,
 			req = instance.fetch( url ).then( function( results ){
-					instance.format( results ).then( function( resultItems ){
-						instance.lazyLoad( instance.settings.context, function(){
-							instance.exportData()
-							instance.afterLazyLoad()
-						})
-						instance.afterLoad( resultItems )
-					}).catch( function( err ){
-						instance.log( err, 'error' )
+
+				instance.format( results ).then( function( newContents ){
+
+					instance.log({
+						Status: 200,
+						HTML: newContents.html()
+					}, 'cache', keyCache)
+
+					instance.exportData()
+
+					instance.lazyLoad( instance.settings.context, function(){
+
+						instance.afterLazyLoad()
 					})
-				  })
+
+					instance.afterLoad( newContents )
+
+				}).catch( function( err ){
+
+					instance.log( err, 'error' )
+				})
+			}).catch( function( err ){
+
+				instance.log( err, 'error' )
+			})
 	}
 	Fetch.prototype.fetch = function( url ){
 
@@ -70,11 +86,14 @@
 
 					if( bExists === false ){
 
+						var strErrorMessage = 'Page `' + url + '` Does Not Exist.'
+
 						instance.log({
-							HTML: '404',
-							ErrorThrown: url + ' - Page Does Not Exist'
-						}, 'cache')
-						reject('RHLFetch Error: Page `' + url + '` Does Not Exist. Skipping')
+							Status: 404,
+							ErrorThrown: strErrorMessage
+						}, 'cache', keyCache)
+
+						reject('RHLFetch Error: ' + strErrorMessage + ' Skipping')
 					}else{
 
 						$.ajax({
@@ -89,6 +108,7 @@
 								}, 'cache', keyCache)
 
 								instance.onFail()
+
 								reject('Page Not Found: ' + errorThrown)
 							}
 						}).done( function( results, textStatus, jqXHR ){
@@ -96,12 +116,9 @@
 							var $results = $( results ).find( instance.settings.contextRemote )
 
 							if( $results.length !== 0 ){
-
-								instance.log({
-									Status: jqXHR.status,
-								}, 'cache', keyCache)
-
+								//Log the result after format to cache live content
 								instance.onSuccess()
+
 								resolve( $results )
 							}else{
 
@@ -111,6 +128,7 @@
 								}, 'cache', keyCache)
 
 								instance.onFail()
+
 								reject('No Results')
 							}
 						})
@@ -132,26 +150,27 @@
 		})
 		return data
 	}
-	Fetch.prototype.exportData = function(){
+	Fetch.prototype.exportData = function( objRequests ){
 
-		this.log( data, 'dir')
-		var objCookieBadRequests = {},
-			objCookieRequestsData = {}
+		var objRequests = data.requests || objRequests,
+			cookieOptions = { expires: 4, path: '/' }
 
 		$.each( data.requests, function( key, val ){
+
 			switch( val.Status ){
 				case 404:
 				case 403:
-					objCookieBadRequests[ key ] = val
+
+					Cookies.set('RHLFetchBadRequests_' + key, val.ErrorThrown, cookieOptions)
+
 					break;
 				case 200:
-				default:
-					objCookieRequestsData[ key ] = val
+
+					Cookies.set('RHLFetchRequests_' + key, val.Status, cookieOptions);
+
 					break;
 			}
 		})
-		//$.Cookie('RHLFetchBadRequests', objCookieBadRequests)
-		//$.Cookie('RHLFetchRequestsData', objCookieRequestsData)
 
 		return data
 	}
@@ -178,7 +197,7 @@
 					instance.UpdateView( $template.html(), content )
 
 					if( nth === nResults )
-						resolve( $resultItems )
+						resolve( $template )
 				})
 			})
 
@@ -238,22 +257,43 @@
 		})
 	}
 	Fetch.prototype.urlExists = function( url, callback ){
-		var xhr = new XMLHttpRequest()
-		xhr.onreadystatechange = function(){
-			if( xhr.readyState === 4 ){
-				callback( xhr.status < 400 );
+
+		var isBrokenLink = Cookies.get('RHLFetchBadRequests_' + window.btoa( url ) ),
+			isValidLink = Cookies.get('RHLFetchRequests_' + window.btoa( url ) )
+
+		if( typeof isBrokenLink !== 'undefined' ){
+
+			callback( false );
+		}else
+		if( typeof isValidLink !== 'undefined' ){
+
+			callback( true );
+		}else{
+
+			var xhr = new XMLHttpRequest()
+			xhr.onreadystatechange = function(){
+
+				if( xhr.readyState === 4 ){
+
+					callback( xhr.status < 400 );
+				}
 			}
+			xhr.open('HEAD', url)
+			xhr.send()
 		}
-		xhr.open('HEAD', url)
-		xhr.send()
 	}
 	Fetch.prototype.log = function( elem, mode, key ){
+
 		switch( mode ){
 			case 'cache':
+
 				data.requests[ key ] = elem
+
 				break;
 			default:
+
 				if( this.settings.debug !== false ){
+
 					return cl( elem, mode )
 				}
 				break;
